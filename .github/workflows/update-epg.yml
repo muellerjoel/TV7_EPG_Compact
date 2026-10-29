@@ -1,0 +1,37 @@
+name: Update compact TV7 EPG
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Source is updated nightly around 00:00 UTC. Rebuild after that.
+    - cron: '20 3 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compact-epg
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch XMLTV and prepare compact JSON/GZIP
+        run: python scripts/prepare_epg.py --output epg.json.gz
+      - name: Commit updated EPG
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f epg.json.gz
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update compact TV7 EPG'
+            git push
+          fi
