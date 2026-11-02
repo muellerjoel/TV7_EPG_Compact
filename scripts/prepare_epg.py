@@ -8,8 +8,9 @@ Android project or its configuration merely to host this feed.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
+import heapq
 import json
 import logging
 import os
@@ -25,7 +26,6 @@ ZONE = ZoneInfo('Europe/Zurich')
 MAX_COMPRESSED = 30 * 1024 * 1024
 MAX_XML = 350 * 1024 * 1024
 MAX_CHANNELS = 500
-MAX_PROGRAMMES = 20000
 MAX_PER_CHANNEL = 250
 
 class LimitedStream:
@@ -84,14 +84,12 @@ def child_text(element, tag: str, cap: int) -> str:
 
 def preprocess(source, *, now: datetime | None = None) -> dict:
     now = (now or datetime.now(timezone.utc)).astimezone(ZONE)
-    start_day = now.date()
-    # Today, tomorrow and the first six hours of the next day.
-    from_ms = int(datetime.combine(start_day, time.min, ZONE).timestamp() * 1000)
-    until_ms = int((datetime.combine(start_day + timedelta(days=2), time.min, ZONE)
-                    + timedelta(hours=6)).timestamp() * 1000)
+    # Retain a rolling 48 hours back and 48 hours ahead (DST-safe).
+    utc_now = now.astimezone(timezone.utc)
+    from_ms = int((utc_now - timedelta(hours=48)).timestamp() * 1000)
+    until_ms = int((utc_now + timedelta(hours=48)).timestamp() * 1000)
     names: dict[str, list[str]] = {}
     schedules: dict[str, list] = {}
-    total = 0
     root = None
     for event, elem in ET.iterparse(source, events=('start', 'end')):
         if root is None:
@@ -119,17 +117,19 @@ def preprocess(source, *, now: datetime | None = None) -> dict:
             start, end = epg_time(elem.get('start')), epg_time(elem.get('stop'))
             if (channel_id and start is not None and end is not None and
                     from_ms < end and start < until_ms and end > start and
-                    len(schedules.get(channel_id, [])) < MAX_PER_CHANNEL):
+                    (channel_id in schedules or len(schedules) < MAX_CHANNELS)):
                 title = child_text(elem, 'title', 170)
                 if title:
-                    schedules.setdefault(channel_id, []).append([
-                        start, end, title,
-                        child_text(elem, 'sub-title', 130),
-                        child_text(elem, 'desc', 420),
-                    ])
-                    total += 1
-                    if total > MAX_PROGRAMMES:
-                        raise ValueError('Too many EPG programmes')
+                    # Bounded min-heap retains the latest shows regardless
+                    # of upstream order, without an arbitrary global limit.
+                    programme = (end, start, title,
+                                 child_text(elem, 'sub-title', 130),
+                                 child_text(elem, 'desc', 420))
+                    channel = schedules.setdefault(channel_id, [])
+                    if len(channel) < MAX_PER_CHANNEL:
+                        heapq.heappush(channel, programme)
+                    elif programme > channel[0]:
+                        heapq.heapreplace(channel, programme)
             elem.clear()
             if root is not None:
                 root.clear()
@@ -138,7 +138,11 @@ def preprocess(source, *, now: datetime | None = None) -> dict:
         raise ValueError('Upstream XMLTV has no programmes in the requested time window')
     channels = []
     for channel_id in sorted(schedules):
-        programmes = sorted(schedules[channel_id], key=lambda item: item[0])
+        programmes = sorted(
+            ([start, end, title, subtitle, desc]
+             for end, start, title, subtitle, desc in schedules[channel_id]),
+            key=lambda item: item[0],
+        )
         channels.append({'id': channel_id, 'names': names.get(channel_id, []),
                          'programmes': programmes})
     return {

@@ -22,4 +22,8 @@ python3 scripts/prepare_epg.py --output epg.json.gz
 Format `version=1`: `generated_at`, `from`, `until` are Unix timestamps in
 milliseconds. `channels` array contains objects with `id`, `names`, and
 `programmes` where each programme is `[startMs, endMs, title, subtitle, desc]`.
-The guide covers the current day and the next day in Europe/Zurich plus 6h.
+Every day the workflow publishes a fresh epg.json.gz covering exactly 48 hours
+back and 48 hours ahead (a rolling window, DST-safe).
+The daily job commits the regenerated GZIP to main, so the download URL remains stable.
+The old 20,000-programme total limit is removed; the output is bounded to
+500 channels and the 250 most recently ending programmes per channel.
